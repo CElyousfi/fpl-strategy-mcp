@@ -14,11 +14,33 @@ maps to a named section of the strategy documents this project is built on:
 | `fpl_blank_double_gameweeks` | Build Strategy §8 — chip timing |
 | `fpl_get_team` | tracking our actual live squad, publicly, no login |
 | `fpl_price_ownership_trends` | Layers 1.3 + 2.1 — price/EO signal |
+| `fpl_ping` | diagnostics — is a failure the host, the FPL API, or a tool? Call this first when something breaks |
 
 No FPL email or password is ever required. Everything reads public, unauthenticated
 endpoints only — this was a deliberate choice, partly because we don't need
 anything else, and partly because handing real login credentials to any
 third-party code (ours included) is a reasonable thing to be cautious about.
+
+## Reliability notes (read this if tools "randomly" fail)
+
+The server runs in **stateless** streamable-HTTP mode (`stateless_http=True`).
+The SDK default is stateful, which keeps MCP sessions in process memory — on a
+free-tier host that sleeps and restarts, the client's stored session id is
+invalidated on every restart and every tool call fails with a generic execution
+error until the connector is re-initialised. Stateless mode makes each call
+self-contained, so a restart is just a slow first call, not a broken session.
+
+Other things done deliberately:
+- One shared process-wide cache (`fpl_client.SHARED_CACHE`), so the multi-MB
+  `bootstrap-static` payload is downloaded once per 4 hours, not once per call.
+- 30s timeout with retries on timeouts and 5xx; 403s are reported as "the host
+  is being blocked", which is the FPL API's usual behaviour toward some cloud IPs.
+- `GET /health` for Render's health check and for a keep-alive pinger. Pointing
+  a free cron (e.g. cron-job.org, every 10 min) at `/health` stops the free tier
+  spinning down between calls.
+
+If a tool still fails: call `fpl_ping`. If it reports `ok: true`, the problem
+is in the tool; if not, its `error` field says whether it's the API or the host.
 
 ## What's been verified vs. what to check on first run
 
@@ -27,7 +49,8 @@ API** (network allowlist restriction) — so testing here meant:
 - Full unit tests against synthetic data shaped like real FPL API responses
   (`test_analysis.py`) — 18/18 passing.
 - Full integration tests through the actual MCP tool-call path with a mocked
-  API layer (`test_server_integration.py`) — 11/11 passing.
+  API layer (`test_server_integration.py`) — 19/19 passing, including the get_team
+  happy path, the stateless-mode diagnostics tool, and the shared cache.
 - Syntax and import verification for every file.
 
 The one thing that's genuinely unverified against the real API is the exact

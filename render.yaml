@@ -1,0 +1,13 @@
+# Render Blueprint — lets Render pick up healthCheckPath and env vars from the repo
+# instead of the dashboard. Render still detects the Dockerfile automatically.
+services:
+  - type: web
+    name: fpl-strategy-mcp
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: MCP_TRANSPORT
+        value: streamable-http
+      - key: PYTHONUNBUFFERED
+        value: "1"

@@ -68,12 +68,34 @@ async def mock_player_summary(self, player_id):
     ]}
 
 
+async def mock_entry(self, team_id):
+    if team_id == 99:
+        raise fpl_client.FPLAPIError("Not found: /entry/99/. Check that any IDs used are correct.")
+    return {"player_first_name": "Test", "player_last_name": "Manager", "name": "Tier FC",
+            "summary_overall_rank": 123456}
+
+
+async def mock_entry_picks(self, team_id, event):
+    return {"active_chip": None,
+            "entry_history": {"points": 85, "rank": 3923457, "bank": 0, "value": 1000,
+                              "event_transfers": 0, "event_transfers_cost": 0, "points_on_bench": 0},
+            "picks": [{"element": 502, "is_captain": True, "is_vice_captain": False, "multiplier": 2},
+                      {"element": 501, "is_captain": False, "is_vice_captain": True, "multiplier": 1}]}
+
+
+async def mock_entry_history(self, team_id):
+    return {"chips": []}
+
+
 async def main():
     # Monkey-patch the network layer only — everything else (server.py routing,
     # analysis.py logic, JSON shaping) runs for real.
     fpl_client.FPLClient.bootstrap = mock_bootstrap
     fpl_client.FPLClient.fixtures = mock_fixtures
     fpl_client.FPLClient.player_summary = mock_player_summary
+    fpl_client.FPLClient.entry = mock_entry
+    fpl_client.FPLClient.entry_picks = mock_entry_picks
+    fpl_client.FPLClient.entry_history = mock_entry_history
 
     # --- fpl_search_players ---
     r = await server.mcp.call_tool("fpl_search_players", {"params": {"position": "FWD", "limit": 10}})
@@ -115,6 +137,29 @@ async def main():
     data = json.loads(r.structured_content["result"])
     check("price_trends: Gabriel is the top riser", data["likely_price_risers"][0]["name"] == "Gabriel")
     check("price_trends: Haaland is the top faller", data["likely_price_fallers"][0]["name"] == "Haaland")
+
+    # --- fpl_get_team (happy path + clean error path) ---
+    r = await server.mcp.call_tool("fpl_get_team", {"params": {"team_id": 4605183, "event": 2}})
+    data = json.loads(r.structured_content["result"])
+    check("get_team: manager name resolved", data["manager_name"] == "Test Manager")
+    check("get_team: captain flagged on Haaland", any(p["name"] == "Haaland" and p["is_captain"] for p in data["picks"]))
+    check("get_team: chip log present and empty", data["chips_used_this_season"] == [])
+    check("get_team: falls back to current gameweek when event omitted",
+          json.loads((await server.mcp.call_tool("fpl_get_team", {"params": {"team_id": 4605183}})).structured_content["result"])["gameweek"] == 1)
+    r = await server.mcp.call_tool("fpl_get_team", {"params": {"team_id": 99}})
+    data = json.loads(r.structured_content["result"])
+    check("get_team: invalid id returns a clean JSON error, not a crash", "error" in data and "Not found" in data["error"])
+
+    # --- fpl_ping ---
+    r = await server.mcp.call_tool("fpl_ping", {"params": {}})
+    data = json.loads(r.structured_content["result"])
+    check("ping: ok with mocked API", data["ok"] is True and data["current_gameweek"] == 1)
+
+    # --- shared cache: two clients share one cache ---
+    fpl_client.SHARED_CACHE.set("/probe/", {"x": 1})
+    check("cache: a fresh FPLClient sees entries written by another",
+          fpl_client.FPLClient()._cache.get("/probe/") == {"x": 1})
+    fpl_client.SHARED_CACHE.clear()
 
     print()
     if failures:

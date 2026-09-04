@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from mcp.server.mcpserver import MCPServer
 
-from fpl_client import FPLClient, FPLAPIError, position_name, price
+from fpl_client import SHARED_CACHE, FPLClient, FPLAPIError, position_name, price
 from analysis import (
     DefconFieldsNotFound,
     classify_tier,
@@ -415,6 +415,17 @@ async def fpl_get_team(params: GetTeamInput) -> str:
             boot = await client.bootstrap()
             players_by_id = {e["id"]: e for e in boot["elements"]}
 
+            # Chip log — needed for "which chips do we still have" without logging in.
+            chips_used = []
+            try:
+                hist_data = await client.entry_history(params.team_id)
+                chips_used = [
+                    {"chip": c.get("name"), "gameweek": c.get("event")}
+                    for c in hist_data.get("chips", [])
+                ]
+            except FPLAPIError:
+                chips_used = ["unavailable"]
+
             picks = []
             for p in picks_data.get("picks", []):
                 el = players_by_id.get(p["element"], {})
@@ -439,6 +450,8 @@ async def fpl_get_team(params: GetTeamInput) -> str:
                 "transfers_made": hist.get("event_transfers"),
                 "transfer_cost": hist.get("event_transfers_cost"),
                 "points_on_bench": hist.get("points_on_bench"),
+                "active_chip": picks_data.get("active_chip"),
+                "chips_used_this_season": chips_used,
                 "picks": picks,
             }, indent=2)
     except Exception as e:
@@ -493,12 +506,71 @@ async def fpl_price_ownership_trends(params: TrendsInput) -> str:
         return _err(e)
 
 
+# ---------------------------------------------------------------------------
+# 9. fpl_ping — diagnostics: is it the host, the API, or us?
+# ---------------------------------------------------------------------------
+
+class PingInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+@mcp.tool(
+    name="fpl_ping",
+    annotations={"title": "Server & FPL API Diagnostics", **READ_ONLY},
+)
+async def fpl_ping(params: PingInput) -> str:
+    """One call that answers 'why is it broken?': fetches bootstrap-static, reports
+    round-trip time, current gameweek, whether the process cache was warm, and any
+    error verbatim. If this works and other tools don't, the problem is in a tool;
+    if this fails, the problem is the host or the FPL API.
+    """
+    import time as _t
+    started = _t.time()
+    warm = "/bootstrap-static/" in SHARED_CACHE.stats()
+    try:
+        async with FPLClient() as client:
+            boot = await client.bootstrap()
+            current = await client.current_event_id()
+            return json.dumps({
+                "ok": True,
+                "fpl_api_ms": round((_t.time() - started) * 1000),
+                "cache_was_warm": warm,
+                "current_gameweek": current,
+                "player_count": len(boot.get("elements", [])),
+                "cached_paths_ttl_seconds": SHARED_CACHE.stats(),
+            }, indent=2)
+    except Exception as e:
+        return json.dumps({"ok": False, "elapsed_ms": round((_t.time() - started) * 1000),
+                           "error": str(e)}, indent=2)
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request):
+    """Plain HTTP endpoint for Render's health check and for an external keep-alive
+    pinger (e.g. a free cron hitting this every 10 min stops the free tier sleeping)."""
+    from starlette.responses import JSONResponse
+    return JSONResponse({"status": "ok", "cached": list(SHARED_CACHE.stats().keys())})
+
+
 if __name__ == "__main__":
     import os
 
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     if transport == "streamable-http":
         port = int(os.environ.get("PORT", 8000))
-        mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
+        # stateless_http=True is the important fix for a free-tier host: the default
+        # mode keeps MCP sessions in process memory, so every time Render spins the
+        # container down and back up, claude.ai's stored session id is gone and every
+        # tool call fails with a generic execution error until the connector is
+        # re-initialised. Stateless mode makes each call self-contained.
+        # json_response=True returns plain JSON instead of an SSE stream — simpler for
+        # proxies and load balancers to pass through unchanged.
+        mcp.run(
+            transport="streamable-http",
+            host="0.0.0.0",
+            port=port,
+            stateless_http=True,
+            json_response=True,
+        )
     else:
         mcp.run()  # stdio — for local Claude Desktop / Claude Code use

@@ -10,9 +10,12 @@ from analysis import (
 )
 
 failures = []
+checks_run = 0
 
 
 def check(label, condition):
+    global checks_run
+    checks_run += 1
     status = "PASS" if condition else "FAIL"
     print(f"[{status}] {label}")
     if not condition:
@@ -107,4 +110,4 @@ if failures:
         print(f"  - {f}")
     sys.exit(1)
 else:
-    print(f"ALL {len([1 for _ in range(1)])} CHECKS PASSED")
+    print(f"ALL {checks_run} CHECKS PASSED")

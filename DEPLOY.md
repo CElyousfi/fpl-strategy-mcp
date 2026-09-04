@@ -59,6 +59,18 @@ just the free-tier tradeoff.
 5. In our conversation, click the **+** in the chat box → **Add connectors** → toggle
    `fpl-strategy` on for this chat.
 
+## Step 3b — Keep it awake (optional, recommended)
+
+Free-tier Render sleeps after ~15 minutes idle. Create a free account at cron-job.org
+(or any uptime pinger), add a job that requests `https://<your-app>.onrender.com/health`
+every 10 minutes, and the server never cold-starts during a session.
+
+## Redeploying after a code change
+
+Push to `main` (or upload the changed files on GitHub) — Render auto-redeploys. Then in
+claude.ai go to Settings → Connectors, disconnect and reconnect `fpl-strategy` once so it
+starts a fresh session against the new build, and call `fpl_ping` to confirm.
+
 ## Step 4 — Tell me it's connected
 
 Once it's on, I'll be able to call `fpl_defcon_profile`, `fpl_fixture_outlook`, and the

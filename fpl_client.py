@@ -29,8 +29,14 @@ from typing import Any, Optional
 import httpx
 
 BASE_URL = "https://fantasy.premierleague.com/api"
-USER_AGENT = "fpl-strategy-mcp/1.0 (personal analysis tool)"
-DEFAULT_TIMEOUT = 15.0
+# A browser-like UA: the FPL API has at times rejected bare/bot-looking agents with 403.
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0 Safari/537.36 fpl-strategy-mcp/1.1"
+)
+HEADERS = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+DEFAULT_TIMEOUT = 30.0  # was 15s — too tight for a cold Render dyno + a multi-MB bootstrap fetch
+RETRIES = 2
 CACHE_TTL_SECONDS = 4 * 60 * 60  # 4 hours — bootstrap/fixtures data doesn't change that often
 
 # Position id -> name, from element_types in bootstrap-static (stable for years)
@@ -68,17 +74,28 @@ class _TTLCache:
     def clear(self) -> None:
         self._store.clear()
 
+    def stats(self) -> dict:
+        now = time.time()
+        return {k: round(exp - now) for k, (exp, _) in self._store.items()}
+
+
+# ONE cache for the whole process. Previously each tool call built a fresh FPLClient
+# with its own empty cache, so the "4-hour cache" never actually cached anything —
+# every call re-downloaded the multi-MB bootstrap-static payload. On a free-tier host
+# that is both slow and a plausible source of tool timeouts.
+SHARED_CACHE = _TTLCache()
+
 
 class FPLClient:
     """Async client for the public FPL API with basic caching and defensive parsing."""
 
-    def __init__(self) -> None:
-        self._cache = _TTLCache()
+    def __init__(self, cache: Optional[_TTLCache] = None) -> None:
+        self._cache = cache if cache is not None else SHARED_CACHE
         self._http: Optional[httpx.AsyncClient] = None
 
     async def __aenter__(self) -> "FPLClient":
         self._http = httpx.AsyncClient(
-            headers={"User-Agent": USER_AGENT}, timeout=DEFAULT_TIMEOUT
+            headers=HEADERS, timeout=DEFAULT_TIMEOUT
         )
         return self
 
@@ -89,9 +106,7 @@ class FPLClient:
     def _client(self) -> httpx.AsyncClient:
         if self._http is None:
             # Allows use outside the `async with` pattern too (FastMCP tools call per-request)
-            self._http = httpx.AsyncClient(
-                headers={"User-Agent": USER_AGENT}, timeout=DEFAULT_TIMEOUT
-            )
+            self._http = httpx.AsyncClient(headers=HEADERS, timeout=DEFAULT_TIMEOUT)
         return self._http
 
     async def _get(self, path: str, cache_ttl: Optional[float] = CACHE_TTL_SECONDS) -> Any:
@@ -100,18 +115,37 @@ class FPLClient:
             cached = self._cache.get(cache_key)
             if cached is not None:
                 return cached
-        try:
-            resp = await self._client().get(f"{BASE_URL}{path}")
-        except httpx.TimeoutException as e:
-            raise FPLAPIError(
-                f"Timed out reaching the FPL API at {path}. It may be under load "
-                "around deadline time — retry in a moment."
-            ) from e
-        except httpx.ConnectError as e:
-            raise FPLAPIError(
-                f"Could not reach the FPL API ({path}). Check network connectivity."
-            ) from e
 
+        last_exc: Optional[Exception] = None
+        resp = None
+        for attempt in range(RETRIES + 1):
+            try:
+                resp = await self._client().get(f"{BASE_URL}{path}")
+            except httpx.TimeoutException as e:
+                last_exc = FPLAPIError(
+                    f"Timed out reaching the FPL API at {path} after {DEFAULT_TIMEOUT:.0f}s. "
+                    "It may be under load around deadline time — retry in a moment."
+                )
+                continue
+            except httpx.ConnectError as e:
+                last_exc = FPLAPIError(f"Could not reach the FPL API ({path}). Check network connectivity.")
+                continue
+            except httpx.HTTPError as e:  # RemoteProtocolError, ReadError, etc.
+                last_exc = FPLAPIError(f"HTTP transport error for {path}: {type(e).__name__}: {e}")
+                continue
+            if resp.status_code >= 500 and attempt < RETRIES:
+                last_exc = FPLAPIError(f"FPL API returned HTTP {resp.status_code} for {path}.")
+                continue
+            break
+        if resp is None:
+            raise last_exc or FPLAPIError(f"Unknown failure fetching {path}.")
+
+        if resp.status_code == 403:
+            raise FPLAPIError(
+                f"FPL API returned 403 Forbidden for {path}. This usually means the API is "
+                "blocking the host's IP or User-Agent, not that the ID is wrong. Run "
+                "check_live_api.py from a home connection to compare."
+            )
         if resp.status_code == 404:
             raise FPLAPIError(f"Not found: {path}. Check that any IDs used are correct.")
         if resp.status_code == 429:
