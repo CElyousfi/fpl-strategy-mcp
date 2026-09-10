@@ -24,6 +24,7 @@ from mcp.server.mcpserver import MCPServer
 
 from fpl_client import SHARED_CACHE, FPLClient, FPLAPIError, position_name, price
 from analysis import (
+    upcoming_fixtures,
     DefconFieldsNotFound,
     classify_tier,
     defcon_hit_rate,
@@ -230,10 +231,11 @@ async def fpl_fixture_outlook(params: FixtureOutlookInput) -> str:
                 return json.dumps({"error": f"No team matching '{params.team_name_contains}'."}, indent=2)
             fixtures = await client.fixtures()
             team_fixtures = [f for f in fixtures if f.get("team_h") == team["id"] or f.get("team_a") == team["id"]]
-            result = rolling_fixture_score(team_fixtures, team["id"], params.num_gameweeks)
+            next_event = await client.next_event_id()
+            result = rolling_fixture_score(team_fixtures, team["id"], params.num_gameweeks, from_event=next_event)
             teams_by_id = {t["id"]: t["name"] for t in boot["teams"]}
             opponents = []
-            for f in sorted([x for x in team_fixtures if x.get("event") is not None], key=lambda x: x["event"])[:params.num_gameweeks]:
+            for f in upcoming_fixtures(team_fixtures, next_event)[:params.num_gameweeks]:
                 opp_id = f["team_a"] if f["team_h"] == team["id"] else f["team_h"]
                 opponents.append(teams_by_id.get(opp_id, "?"))
             return json.dumps({

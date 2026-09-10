@@ -204,6 +204,18 @@ class FPLClient:
         boot = await self.bootstrap()
         return {p["id"]: p for p in boot.get("elements", [])}
 
+    async def next_event_id(self) -> Optional[int]:
+        """The first gameweek whose deadline has not passed — the one transfers apply to.
+        Falls back to current+1, then 1, so an unbroken window is always returned."""
+        boot = await self.bootstrap()
+        for event in boot.get("events", []):
+            if event.get("is_next"):
+                return event["id"]
+        for event in boot.get("events", []):
+            if event.get("is_current"):
+                return event["id"] + (1 if event.get("finished") else 0)
+        return 1
+
     async def current_event_id(self) -> Optional[int]:
         boot = await self.bootstrap()
         for event in boot.get("events", []):

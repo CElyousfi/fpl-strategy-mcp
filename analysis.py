@@ -183,8 +183,28 @@ class FixtureScoreResult:
     note: str
 
 
+def upcoming_fixtures(fixtures_for_team: list[dict], from_event: Optional[int] = None) -> list[dict]:
+    """Only fixtures still to be played, in gameweek order.
+
+    Drops anything the API marks finished or started, and anything before `from_event`
+    when given. Without this, a rolling window taken mid-season silently starts at
+    GW1 and scores fixtures that have already happened (found live in GW3, 2026/27).
+    """
+    out = []
+    for f in fixtures_for_team:
+        if f.get("event") is None:
+            continue
+        if f.get("finished") or f.get("started"):
+            continue
+        if from_event is not None and f["event"] < from_event:
+            continue
+        out.append(f)
+    return sorted(out, key=lambda f: (f["event"], f.get("kickoff_time") or ""))
+
+
 def rolling_fixture_score(
-    fixtures_for_team: list[dict], team_id: int, num_gameweeks: int = 6
+    fixtures_for_team: list[dict], team_id: int, num_gameweeks: int = 6,
+    from_event: Optional[int] = None,
 ) -> FixtureScoreResult:
     """Weighted-average fixture difficulty over a rolling window, not a single-week snapshot.
 
@@ -196,10 +216,7 @@ def rolling_fixture_score(
     does NOT rule out cup-fixture congestion. Cross-check cup scheduling manually per
     the Build Strategy's External Shock Monitoring section.
     """
-    relevant = sorted(
-        [f for f in fixtures_for_team if f.get("event") is not None],
-        key=lambda f: f["event"],
-    )[:num_gameweeks]
+    relevant = upcoming_fixtures(fixtures_for_team, from_event)[:num_gameweeks]
 
     if not relevant:
         return FixtureScoreResult(

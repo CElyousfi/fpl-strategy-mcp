@@ -44,10 +44,14 @@ MOCK_BOOTSTRAP = {
 }
 
 MOCK_FIXTURES = [
+    # GW1 is the *current* (played) gameweek in MOCK_BOOTSTRAP; GW2 is next. A fixture
+    # window must therefore start at GW2 — GW1 is history and must be excluded.
     {"event": 1, "team_h": 1, "team_a": 2, "team_h_difficulty": 2, "team_a_difficulty": 4,
-     "kickoff_time": "2026-08-21T19:00:00Z"},
+     "kickoff_time": "2026-08-21T19:00:00Z", "finished": True, "started": True},
     {"event": 2, "team_h": 2, "team_a": 1, "team_h_difficulty": 3, "team_a_difficulty": 3,
-     "kickoff_time": "2026-08-29T14:00:00Z"},
+     "kickoff_time": "2026-08-29T14:00:00Z", "finished": False, "started": False},
+    {"event": 3, "team_h": 1, "team_a": 2, "team_h_difficulty": 4, "team_a_difficulty": 2,
+     "kickoff_time": "2026-09-05T14:00:00Z", "finished": False, "started": False},
 ]
 
 
@@ -113,10 +117,12 @@ async def main():
     r = await server.mcp.call_tool("fpl_fixture_outlook", {"params": {"team_name_contains": "Arsenal", "num_gameweeks": 2}})
     data = json.loads(r.structured_content["result"])
     check("fixture_outlook: resolves Arsenal by substring", data["team"] == "Arsenal")
-    check("fixture_outlook: reads home fixture difficulty correctly for GW1 (H, diff=2)",
-          data["home_away"][0] == "H" and data["raw_difficulties"][0] == 2)
+    check("fixture_outlook: window starts at the NEXT gameweek, played GW1 excluded",
+          data["gameweeks"] == [2, 3])
     check("fixture_outlook: reads away fixture difficulty correctly for GW2 (A, diff=3)",
-          data["home_away"][1] == "A" and data["raw_difficulties"][1] == 3)
+          data["home_away"][0] == "A" and data["raw_difficulties"][0] == 3)
+    check("fixture_outlook: reads home fixture difficulty correctly for GW3 (H, diff=4)",
+          data["home_away"][1] == "H" and data["raw_difficulties"][1] == 4)
 
     # --- fpl_tier_classifier ---
     r = await server.mcp.call_tool("fpl_tier_classifier", {"params": {"player_id": 502}})

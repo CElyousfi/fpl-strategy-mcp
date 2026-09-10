@@ -103,6 +103,18 @@ bd = find_blank_double_gameweeks(fixtures2, team_ids=[1, 2], event_range=[10, 11
 check("blank/double: team 1 flagged as double in GW11", any(d.team_id == 1 and d.event == 11 for d in bd["doubles"]))
 check("blank/double: team 2 flagged as blank in GW11", any(b.team_id == 2 and b.event == 11 for b in bd["blanks"]))
 
+# --- rolling_fixture_score: must skip played fixtures (live bug, GW3 2026/27) ---
+from analysis import upcoming_fixtures
+_fx = [{"event": gw, "team_h": 1, "team_a": 2, "team_h_difficulty": gw, "team_a_difficulty": 3,
+        "finished": gw <= 3, "started": gw <= 3, "kickoff_time": f"2026-09-{10+gw:02d}T14:00:00Z"}
+       for gw in range(1, 9)]
+_r = rolling_fixture_score(_fx, team_id=1, num_gameweeks=3)
+check("fixture window: starts at first unplayed gameweek, not GW1", _r.gameweeks_considered == [4, 5, 6])
+check("fixture window: difficulties come from the unplayed fixtures", _r.raw_difficulties == [4, 5, 6])
+check("fixture window: from_event moves the window forward",
+      rolling_fixture_score(_fx, team_id=1, num_gameweeks=3, from_event=6).gameweeks_considered == [6, 7, 8])
+check("upcoming_fixtures: drops finished/started fixtures", [f["event"] for f in upcoming_fixtures(_fx)] == [4, 5, 6, 7, 8])
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S):")
@@ -111,3 +123,4 @@ if failures:
     sys.exit(1)
 else:
     print(f"ALL {checks_run} CHECKS PASSED")
+
